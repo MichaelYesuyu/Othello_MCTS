@@ -89,72 +89,95 @@ class MCTSPlayer(Player):
         self.iterations = iterations
         self.exploration_const = exploration_const
         self.rng = random.Random(seed)
+        self.root: Optional[MCTSNode] = None
+
+    def notify_move_played(self, move: Optional[Tuple[int, int]], player: PlayerType):
+        # call this from outside after every real game move.
+        if self.root is None or move is None:
+            self.root = None
+            return
+
+        # if the move exists among children, jump there. else discard tree.
+        for child in self.root.children:
+            if child.move == move:
+                child.parent = None
+                self.root = child
+                return
+
+        self.root = None
 
     def choose_move(self, board: OthelloBoard, progress_callback: Optional[ProgressCallback] = None,) -> Optional[Tuple[int, int]]:
-        # Get legal moves for this color
         root_moves = board.get_valid_moves(self.color)
         if not root_moves:
             return None
 
-        # Root node: it's our turn (self.color)
-        root = MCTSNode(
-            parent=None,
-            move=None,
-            player_to_move=self.color,
-            untried_moves=root_moves[:],  # copy
-        )
+        if self.root is None:
+            root = MCTSNode(
+                parent=None,
+                move=None,
+                player_to_move=self.color,
+                untried_moves=root_moves[:],
+            )
+            self.root = root
+        else:
+            root = self.root
+        
+        remaining = max(0, self.iterations - root.visits)
 
-        # Run MCTS iterations
-        for i in tqdm(range(self.iterations), desc="MCTS", leave=False):
-            node = root
-            # Work on a copy of the board so we don't mutate the real game state
-            sim_board = board.copy()
-            player_to_move = self.color  # whose turn in this simulation
-
-            # 1) SELECTION: traverse the tree down using UCT
-            while node.untried_moves == [] and node.children:
-                node = node.uct_select_child(self.exploration_const)
-                # Apply the move stored in this child
-                if node.move is not None:
-                    r, c = node.move
-                    sim_board.make_move(r, c, player_to_move)
-                # Switch player
-                player_to_move = player_to_move.opponent
-
-            # 2) EXPANSION: expand one new child (if possible)
-            if node.untried_moves:
-                move = self.rng.choice(node.untried_moves)
-                r, c = move
-                sim_board.make_move(r, c, player_to_move)
-                next_player = player_to_move.opponent
-
-                # Untried moves for the new node
-                next_moves = sim_board.get_valid_moves(next_player)
-                node = node.add_child(
-                    move=move,
-                    player_to_move=next_player,
-                    untried_moves=next_moves,
-                )
-                player_to_move = next_player
-
-            # 3) SIMULATION (ROLLOUT): play random moves to the end
-            reward = self._rollout(sim_board, player_to_move)
-
-            # 4) BACKPROPAGATION: propagate reward up to the root
-            self._backpropagate(node, reward)
-
+        if remaining == 0:
+            # we already hit the budget
             if progress_callback is not None:
-                progress_callback(i + 1, self.iterations)
+                progress_callback(self.iterations, self.iterations)
+        else:
+            # MCTS iterations
+            for i in tqdm(range(remaining), desc="MCTS", leave=False):
+                node = root
 
-        # After MCTS, choose the move with the most visits from the root
+                sim_board = board.copy()
+                player_to_move = self.color
+
+                # SELECTION
+                while node.untried_moves == [] and node.children:
+                    node = node.uct_select_child(self.exploration_const)
+
+                    if node.move is not None:
+                        r, c = node.move
+                        sim_board.make_move(r, c, player_to_move)
+
+                    player_to_move = player_to_move.opponent
+
+                # EXPANSION
+                if node.untried_moves:
+                    move = self.rng.choice(node.untried_moves)
+                    r, c = move
+                    sim_board.make_move(r, c, player_to_move)
+                    next_player = player_to_move.opponent
+
+                    # untried moves for the new node
+                    next_moves = sim_board.get_valid_moves(next_player)
+                    node = node.add_child(
+                        move=move,
+                        player_to_move=next_player,
+                        untried_moves=next_moves,
+                    )
+                    player_to_move = next_player
+
+                # SIMULATION
+                reward = self._rollout(sim_board, player_to_move)
+
+                # BACKPROPAGATION
+                self._backpropagate(node, reward)
+
+                if progress_callback is not None:
+                    progress_callback(i + 1, remaining)
+
+        # choose the move with the most visits from the root
         if not root.children:
-            # Shouldn't happen, but just in case
             return None
 
         best_child = max(root.children, key=lambda c: c.visits)
         return best_child.move
 
-    # ----------------- INTERNAL HELPERS ----------------- #
 
     def _rollout(self, board: OthelloBoard, current_player: PlayerType) -> float:
         """
@@ -171,12 +194,12 @@ class MCTSPlayer(Player):
                 board.make_move(r, c, current_player)
                 current_player = current_player.opponent
             else:
-                # No moves for current player: check if opponent has moves
+                # no moves for current player, check if opponent has moves
                 opp_moves = board.get_valid_moves(current_player.opponent)
                 if opp_moves:
                     current_player = current_player.opponent
                 else:
-                    # Neither player can move -> game over
+                    # neither player can move, game over
                     break
 
         black_score, white_score = board.get_score()

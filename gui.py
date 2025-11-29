@@ -381,10 +381,17 @@ class OthelloGUI:
 
         # Attempt move for current player
         if self.board.make_move(row, col, self.current_color):
-            self.on_move_made()
+            self.on_move_made((row, col))
 
-    def on_move_made(self):
-        """Common logic after any move (human or AI) is made"""
+    def on_move_made(self, move):
+        """Common logic after any move (human or AI)."""
+
+        # ---- TREE REUSE: tell MCTS AI the real move ----
+        if self.game_mode == "pva" and self.ai_type == "mcts":
+            # This move was made by the player whose turn *just ended*
+            played_by = self.current_color  
+            self.ai_player.notify_move_played(move, played_by)
+
         # Switch to opponent
         self.current_color = self.current_color.opponent
         self.check_game_state()
@@ -426,7 +433,7 @@ class OthelloGUI:
                     if move is not None:
                         row, col = move
                         if self.board.make_move(row, col, self.current_color):
-                            self.on_move_made()
+                            self.on_move_made((row, col))
 
                     # Reset thread state
                     self.ai_thinking = False
